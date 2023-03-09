@@ -1,75 +1,81 @@
-# import
 import pandas as pd
 import numpy as np
 
-# load ratings
+# load ratings and books data
 ratings = pd.read_csv('BX-Book-Ratings.csv', encoding='cp1251', sep=';')
-ratings = ratings[ratings['Book-Rating']!=0]
+ratings = ratings[ratings['Book-Rating']!=0] #no zero ratings
 
 # load books
-books = pd.read_csv('BX-Books.csv',  encoding='cp1251', sep=';',error_bad_lines=False)
+books = pd.read_csv('BX-Books.csv',  encoding='cp1251', sep=';', error_bad_lines=False)
 
 #users_ratigs = pd.merge(ratings, users, on=['User-ID'])
 dataset = pd.merge(ratings, books, on=['ISBN'])
 dataset_lowercase=dataset.apply(lambda x: x.str.lower() if(x.dtype == 'object') else x)
 
-tolkien_readers = dataset_lowercase['User-ID'][(dataset_lowercase['Book-Title']=='the fellowship of the ring (the lord of the rings, part 1)') & (dataset_lowercase['Book-Author'].str.contains("tolkien"))]
-tolkien_readers = tolkien_readers.tolist()
-tolkien_readers = np.unique(tolkien_readers)
 
-# final dataset
-books_of_tolkien_readers = dataset_lowercase[(dataset_lowercase['User-ID'].isin(tolkien_readers))]
+# lowercase all string columns in both datasets
+ratings = ratings.apply(lambda x: x.str.lower() if (x.dtype == 'object') else x)
+books = books.apply(lambda x: x.str.lower() if (x.dtype == 'object') else x)
 
-# Number of ratings per other books in dataset
-number_of_rating_per_book = books_of_tolkien_readers.groupby(['Book-Title']).agg('count').reset_index()
+# merge ratings and books data on ISBN
+dataset = pd.merge(ratings, books, on='ISBN')
 
-#select only books which have actually higher number of ratings than threshold
-books_to_compare = number_of_rating_per_book['Book-Title'][number_of_rating_per_book['User-ID'] >= 8]
-books_to_compare = books_to_compare.tolist()
+# get a list of unique readers who read a particular book
+def get_readers(book_title):
+    return dataset['User-ID'][(dataset['Book-Title'] == book_title)].unique()
 
-ratings_data_raw = books_of_tolkien_readers[['User-ID', 'Book-Rating', 'Book-Title']][books_of_tolkien_readers['Book-Title'].isin(books_to_compare)]
+# get books read by a list of readers
+def get_books_by_readers(reader_list):
+    return dataset[(dataset['User-ID'].isin(reader_list))]
 
-# group by User and Book and compute mean
-ratings_data_raw_nodup = ratings_data_raw.groupby(['User-ID', 'Book-Title'])['Book-Rating'].mean()
+# get number of ratings for each book read by a list of readers
+def get_rating_counts(df, threshold):
+    book_counts = df.groupby(['Book-Title']).agg('count').reset_index()
+    return book_counts['Book-Title'][book_counts['User-ID'] >= threshold].tolist()
 
-# reset index to see User-ID in every row
-ratings_data_raw_nodup = ratings_data_raw_nodup.to_frame().reset_index()
+# get mean rating for each reader and book pair
+def get_mean_ratings(df):
+    return df.groupby(['User-ID', 'Book-Title'])['Book-Rating'].mean().to_frame().reset_index()
 
-dataset_for_corr = ratings_data_raw_nodup.pivot(index='User-ID', columns='Book-Title', values='Book-Rating')
+# pivot mean ratings to make each book a column
+def pivot_ratings(df):
+    return df.pivot(index='User-ID', columns='Book-Title', values='Book-Rating')
 
-LoR_list = ['the fellowship of the ring (the lord of the rings, part 1)']
-
-result_list = []
-worst_list = []
-
-# for each of the trilogy book compute:
-for LoR_book in LoR_list:
-    
-    #Take out the Lord of the Rings selected book from correlation dataframe
-    dataset_of_other_books = dataset_for_corr.copy(deep=False)
-    dataset_of_other_books.drop([LoR_book], axis=1, inplace=True)
-      
-    # empty lists
+# compute correlations between a book and all other books
+def get_book_correlations(df, book_title):
+    other_books = df.drop([book_title], axis=1)
     book_titles = []
     correlations = []
-    avgrating = []
+    avg_ratings = []
 
-    # corr computation
-    for book_title in list(dataset_of_other_books.columns.values):
-        book_titles.append(book_title)
-        correlations.append(dataset_for_corr[LoR_book].corr(dataset_of_other_books[book_title]))
-        tab=(ratings_data_raw[ratings_data_raw['Book-Title']==book_title].groupby(ratings_data_raw['Book-Title']).mean())
-        avgrating.append(tab['Book-Rating'].min())
-    # final dataframe of all correlation of each book   
-    corr_fellowship = pd.DataFrame(list(zip(book_titles, correlations, avgrating)), columns=['book','corr','avg_rating'])
-    corr_fellowship.head()
+    for title in list(other_books.columns.values):
+        book_titles.append(title)
+        correlations.append(df[book_title].corr(df[title]))
+        avg_ratings.append(get_mean_ratings(dataset[(dataset['Book-Title'] == title)])['Book-Rating'].min())
 
-    # top 10 books with highest corr
-    result_list.append(corr_fellowship.sort_values('corr', ascending = False).head(10))
-    
-    #worst 10 books
-    worst_list.append(corr_fellowship.sort_values('corr', ascending = False).tail(10))
-    
-print("Correlation for book:", LoR_list[0])
-#print("Average rating of LOR:", ratings_data_raw[ratings_data_raw['Book-Title']=='the fellowship of the ring (the lord of the rings, part 1'].groupby(ratings_data_raw['Book-Title']).mean()))
-rslt = result_list[0]
+    return pd.DataFrame(list(zip(book_titles, correlations, avg_ratings)), columns=['book', 'corr', 'avg_rating'])
+
+# main function to compute correlations for a list of books
+def compute_book_correlations(book_list, threshold):
+    results = []
+
+    for book_title in book_list:
+        readers = get_readers(book_title)
+        books_by_readers = get_books_by_readers(readers)
+        relevant_books = get_rating_counts(books_by_readers, threshold)
+        ratings_data = get_mean_ratings(books_by_readers[books_by_readers['Book-Title'].isin(relevant_books)])
+        pivoted_ratings = pivot_ratings(ratings_data)
+        correlations = get_book_correlations(pivoted_ratings, book_title)
+        results.append(correlations.sort_values('corr', ascending=False).head(10))
+
+    return results
+
+# sample usage
+book_list = ['book 1', 'book 2', 'book 3']
+threshold = 8
+results = compute_book_correlations(book_list, threshold)
+
+# print top 10 correlated books for each book in the list
+for i, book_title in enumerate(book_list):
+    print(f"Top 10 correlated books for '{book_title}':")
+    print(results[i])
