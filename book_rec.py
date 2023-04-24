@@ -1,85 +1,149 @@
-import streamlit as st
+# import
 import pandas as pd
 import numpy as np
-from sklearn.feature_extraction.text import CountVectorizer
 
 # load ratings
-ratings = pd.read_csv('BX-Book-Ratings.csv', encoding='cp1251', sep=';',error_bad_lines=False, dtype={'ISBN': str})
+ratings = pd.read_csv('Downloads/BX-Book-Ratings.csv', encoding='cp1251', sep=';')
 ratings = ratings[ratings['Book-Rating']!=0]
-print(ratings.shape)
 
 # load books
-books = pd.read_csv('BX-Books.csv', encoding='cp1251', sep=';',error_bad_lines=False, low_memory=False, dtype={'ISBN': str})
+books = pd.read_csv('Downloads/BX-Books.csv',  encoding='cp1251', sep=';',error_bad_lines=False)
 
-# merge ratings and books data
+#users_ratigs = pd.merge(ratings, users, on=['User-ID'])
 dataset = pd.merge(ratings, books, on=['ISBN'])
+dataset_lowercase=dataset.apply(lambda x: x.str.lower() if(x.dtype == 'object') else x)
 
-# drop any rows with missing values
-dataset.dropna(inplace=True)
+tolkien_readers = dataset_lowercase['User-ID'][(dataset_lowercase['Book-Title']=='the fellowship of the ring (the lord of the rings, part 1)') & (dataset_lowercase['Book-Author'].str.contains("tolkien"))]
+tolkien_readers = tolkien_readers.tolist()
+tolkien_readers = np.unique(tolkien_readers)
 
-# convert all string columns to lowercase
-dataset_lowercase = dataset.apply(lambda x: x.str.lower() if(x.dtype == 'object') else x)
+# final dataset
+books_of_tolkien_readers = dataset_lowercase[(dataset_lowercase['User-ID'].isin(tolkien_readers))]
 
-# define function to get similar books
-def get_similar_books(book_title):
-    # get readers who have read the selected book
-    similar_readers = dataset_lowercase['User-ID'][(dataset_lowercase['Book-Title']==book_title)]
-    similar_readers = similar_readers.tolist()
-    similar_readers = np.unique(similar_readers)
+# Number of ratings per other books in dataset
+number_of_rating_per_book = books_of_tolkien_readers.groupby(['Book-Title']).agg('count').reset_index()
 
-    # filter dataset to books read by similar readers
-    books_of_similar_readers = dataset_lowercase[(dataset_lowercase['User-ID'].isin(similar_readers))]
+#select only books which have actually higher number of ratings than threshold
+books_to_compare = number_of_rating_per_book['Book-Title'][number_of_rating_per_book['User-ID'] >= 8]
+books_to_compare = books_to_compare.tolist()
 
-    # group by book title and count number of ratings
-    number_of_ratings_per_book = books_of_similar_readers.groupby(['Book-Title']).agg('count').reset_index()
+ratings_data_raw = books_of_tolkien_readers[['User-ID', 'Book-Rating', 'Book-Title']][books_of_tolkien_readers['Book-Title'].isin(books_to_compare)]
 
-    # select books with more than 8 ratings
-    books_to_compare = number_of_ratings_per_book['Book-Title'][number_of_ratings_per_book['User-ID'] >= 8]
-    books_to_compare = books_to_compare.tolist()
+# group by User and Book and compute mean
+ratings_data_raw_nodup = ratings_data_raw.groupby(['User-ID', 'Book-Title'])['Book-Rating'].mean()
 
-    # get rating data for selected books
-    ratings_data_raw = books_of_similar_readers[['User-ID', 'Book-Rating', 'Book-Title']][books_of_similar_readers['Book-Title'].isin(books_to_compare)]
+# reset index to see User-ID in every row
+ratings_data_raw_nodup = ratings_data_raw_nodup.to_frame().reset_index()
 
-    # group by user and book, and compute mean rating
-    ratings_data_raw_nodup = ratings_data_raw.groupby(['User-ID', 'Book-Title'])['Book-Rating'].mean()
+dataset_for_corr = ratings_data_raw_nodup.pivot(index='User-ID', columns='Book-Title', values='Book-Rating')
 
-    # reset index to see User-ID in every row
-    ratings_data_raw_nodup = ratings_data_raw_nodup.to_frame().reset_index()
+LoR_list = ['the fellowship of the ring (the lord of the rings, part 1)']
 
-    # create pivot table of user ratings for each book
-    dataset_for_corr = ratings_data_raw_nodup.pivot(index='User-ID', columns='Book-Title', values='Book-Rating')
+result_list = []
+worst_list = []
 
-    # compute correlation with selected book for all other books
-    correlations = dataset_for_corr.corrwith(dataset_for_corr[book_title])
+# for each of the trilogy book compute:
+for LoR_book in LoR_list:
+    
+    #Take out the Lord of the Rings selected book from correlation dataframe
+    dataset_of_other_books = dataset_for_corr.copy(deep=False)
+    dataset_of_other_books.drop([LoR_book], axis=1, inplace=True)
+      
+    # empty lists
+    book_titles = []
+    correlations = []
+    avgrating = []
 
-    # get top 10 similar books
-    similar_books = correlations.sort_values(ascending=False)[1:11]
+    # corr computation
+    for book_title in list(dataset_of_other_books.columns.values):
+        book_titles.append(book_title)
+        correlations.append(dataset_for_corr[LoR_book].corr(dataset_of_other_books[book_title]))
+        tab=(ratings_data_raw[ratings_data_raw['Book-Title']==book_title].groupby(ratings_data_raw['Book-Title']).mean())
+        avgrating.append(tab['Book-Rating'].min())
+    # final dataframe of all correlation of each book   
+    corr_fellowship = pd.DataFrame(list(zip(book_titles, correlations, avgrating)), columns=['book','corr','avg_rating'])
+    corr_fellowship.head()
 
-    return similar_books.index.tolist()
+    # top 10 books with highest corr
+    result_list.append(corr_fellowship.sort_values('corr', ascending = False).head(10))
+    
+    #worst 10 books
+    worst_list.append(corr_fellowship.sort_values('corr', ascending = False).tail(10))
+    
+print("Correlation for book:", LoR_list[0])
+#print("Average rating of LOR:", ratings_data_raw[ratings_data_raw['Book-Title']=='the fellowship of the ring (the lord of the rings, part 1'].groupby(ratings_data_raw['Book-Title']).mean()))
+rslt = result_list[0]# import
+import pandas as pd
+import numpy as np
 
-def app():
-    st.title('Book Recommendation System')
+# load ratings
+ratings = pd.read_csv('Downloads/BX-Book-Ratings.csv', encoding='cp1251', sep=';')
+ratings = ratings[ratings['Book-Rating']!=0]
 
-    # select book to get similar books
-    book_options = books['Book-Title'].sample(n=100).tolist()
-    selected_book = st.text_input('Enter a book title to get similar books', '')
+# load books
+books = pd.read_csv('Downloads/BX-Books.csv',  encoding='cp1251', sep=';',error_bad_lines=False)
 
-    # check if input is valid and get similar books
-    if selected_book:
-        # remove any leading/trailing spaces
-        selected_book = selected_book.strip()
+#users_ratigs = pd.merge(ratings, users, on=['User-ID'])
+dataset = pd.merge(ratings, books, on=['ISBN'])
+dataset_lowercase=dataset.apply(lambda x: x.str.lower() if(x.dtype == 'object') else x)
 
-        # check if input is in the list of available books
-        if selected_book in book_options:
-            # get similar books and display results
-            similar_books = get_similar_books(selected_book)
-            st.write('Top 10 books similar to', selected_book)
-            for book in similar_books:
-                st.write(book)
-        else:
-            st.write('Sorry, this book is not available in our database.')
-    else:
-        st.write('Please enter a book title')
+tolkien_readers = dataset_lowercase['User-ID'][(dataset_lowercase['Book-Title']=='the fellowship of the ring (the lord of the rings, part 1)') & (dataset_lowercase['Book-Author'].str.contains("tolkien"))]
+tolkien_readers = tolkien_readers.tolist()
+tolkien_readers = np.unique(tolkien_readers)
 
-if __name__ == '__main__':
-    app()
+# final dataset
+books_of_tolkien_readers = dataset_lowercase[(dataset_lowercase['User-ID'].isin(tolkien_readers))]
+
+# Number of ratings per other books in dataset
+number_of_rating_per_book = books_of_tolkien_readers.groupby(['Book-Title']).agg('count').reset_index()
+
+#select only books which have actually higher number of ratings than threshold
+books_to_compare = number_of_rating_per_book['Book-Title'][number_of_rating_per_book['User-ID'] >= 8]
+books_to_compare = books_to_compare.tolist()
+
+ratings_data_raw = books_of_tolkien_readers[['User-ID', 'Book-Rating', 'Book-Title']][books_of_tolkien_readers['Book-Title'].isin(books_to_compare)]
+
+# group by User and Book and compute mean
+ratings_data_raw_nodup = ratings_data_raw.groupby(['User-ID', 'Book-Title'])['Book-Rating'].mean()
+
+# reset index to see User-ID in every row
+ratings_data_raw_nodup = ratings_data_raw_nodup.to_frame().reset_index()
+
+dataset_for_corr = ratings_data_raw_nodup.pivot(index='User-ID', columns='Book-Title', values='Book-Rating')
+
+LoR_list = ['the fellowship of the ring (the lord of the rings, part 1)']
+
+result_list = []
+worst_list = []
+
+# for each of the trilogy book compute:
+for LoR_book in LoR_list:
+    
+    #Take out the Lord of the Rings selected book from correlation dataframe
+    dataset_of_other_books = dataset_for_corr.copy(deep=False)
+    dataset_of_other_books.drop([LoR_book], axis=1, inplace=True)
+      
+    # empty lists
+    book_titles = []
+    correlations = []
+    avgrating = []
+
+    # corr computation
+    for book_title in list(dataset_of_other_books.columns.values):
+        book_titles.append(book_title)
+        correlations.append(dataset_for_corr[LoR_book].corr(dataset_of_other_books[book_title]))
+        tab=(ratings_data_raw[ratings_data_raw['Book-Title']==book_title].groupby(ratings_data_raw['Book-Title']).mean())
+        avgrating.append(tab['Book-Rating'].min())
+    # final dataframe of all correlation of each book   
+    corr_fellowship = pd.DataFrame(list(zip(book_titles, correlations, avgrating)), columns=['book','corr','avg_rating'])
+    corr_fellowship.head()
+
+    # top 10 books with highest corr
+    result_list.append(corr_fellowship.sort_values('corr', ascending = False).head(10))
+    
+    #worst 10 books
+    worst_list.append(corr_fellowship.sort_values('corr', ascending = False).tail(10))
+    
+print("Correlation for book:", LoR_list[0])
+#print("Average rating of LOR:", ratings_data_raw[ratings_data_raw['Book-Title']=='the fellowship of the ring (the lord of the rings, part 1'].groupby(ratings_data_raw['Book-Title']).mean()))
+rslt = result_list[0]
